@@ -1,0 +1,47 @@
+Bootstrap: docker
+From: ubuntu22.04
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Europe/London
+    export PYTHONUNBUFFERED=1
+    export PIP_NO_CACHE_DIR=1
+    export PIP_ROOT_USER_ACTION=ignore
+    export MUJOCO_GL=egl
+    export PATH="/usr/local/bin:$PATH"
+
+%files
+    requirements.txt /tmp/requirements.txt
+    entrypoint.sh /entrypoint.sh
+
+%post
+    echo "=== System setup ==="
+    apt-get update && apt-get install -y \
+        ffmpeg git vim curl software-properties-common grep \
+        libglew-dev x11-xserver-utils xvfb wget \
+        && apt-get clean
+
+    echo "=== Installing Python 3.11 ==="
+    add-apt-repository ppa:deadsnakes/ppa -y
+    apt-get update && apt-get install -y python3.11-dev python3.11-venv python3.11-distutils && apt-get clean
+
+    # Ensure python3 and pip point to Python 3.11
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+
+    echo "=== Installing environment packages ==="
+    wget -O - https://gist.githubusercontent.com/danijar/ca6ab917188d2e081a8253b3ca5c36d3/raw/install-dmlab.sh | sh
+    pip install ale_py==0.9.0 "autorom[accept-rom-license]==0.6.1"
+    pip install dm_control
+
+    echo "=== Installing JAX (CUDA) and requirements ==="
+    pip install "jax[cuda]==0.5.0"
+    if [ -f /tmp/requirements.txt ]; then
+        pip install -r /tmp/requirements.txt
+    fi
+
+    echo "=== Build complete ==="
+
+%runscript
+    echo "=== Running entrypoint ==="
+    exec sh /entrypoint.sh "$@"
