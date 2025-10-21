@@ -257,6 +257,11 @@ defaults:
     repval_grad: True
     report: True
     report_gradnorms: False
+    exploration:
+      expl_behavior: "greedy"
+
+      plan2explore:
+        dummy: 1
 
 size1m: &size1m
   .*\.rssm: { deter: 512, hidden: 64, classes: 4 }
@@ -335,6 +340,13 @@ loconav:
   task: loconav_ant_maze_m
   env.loconav.repeat: 1
   run.train_ratio: 256
+
+random:
+  agent.exploration.expl_behavior: "random"
+greedy:
+  agent.exploration.expl_behavior: "greedy"
+plan2explore:
+  agent.exploration.expl_behavior: "plan2explore"
 
 multicpu:
   batch_size: 12

@@ -10,19 +10,11 @@ import ninjax as nj
 import numpy as np
 import optax
 
-from . import rssm
-
-f32 = jnp.float32
-i32 = jnp.int32
-sg = lambda xs, skip=False: xs if skip else jax.lax.stop_gradient(xs)
-sample = lambda xs: jax.tree.map(lambda x: x.sample(nj.seed()), xs)
-prefix = lambda xs, p: {f"{p}/{k}": v for k, v in xs.items()}
-concat = lambda xs, a: jax.tree.map(lambda *x: jnp.concatenate(x, a), *xs)
-isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
+from . import expl, rssm
+from .utils import concat, f32, i32, isimage, prefix, sample, sg
 
 
 class Agent(embodied.jax.Agent):
-
     banner = [
         r"---  ___                           __   ______ ---",
         r"--- |   \ _ _ ___ __ _ _ __  ___ _ \ \ / /__ / ---",
@@ -34,25 +26,18 @@ class Agent(embodied.jax.Agent):
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
-
         exclude = ("is_first", "is_last", "is_terminal", "reward")
         enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
         dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
         self.enc = {
             "simple": rssm.Encoder,
-        }[
-            config.enc.typ
-        ](enc_space, **config.enc[config.enc.typ], name="enc")
+        }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name="enc")
         self.dyn = {
             "rssm": rssm.RSSM,
-        }[
-            config.dyn.typ
-        ](act_space, **config.dyn[config.dyn.typ], name="dyn")
+        }[config.dyn.typ](act_space, **config.dyn[config.dyn.typ], name="dyn")
         self.dec = {
             "simple": rssm.Decoder,
-        }[
-            config.dec.typ
-        ](dec_space, **config.dec[config.dec.typ], name="dec")
+        }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name="dec")
 
         self.feat2tensor = lambda x: jnp.concatenate(
             [
@@ -100,6 +85,16 @@ class Agent(embodied.jax.Agent):
         scales.update({k: rec for k in dec_space})
         self.scales = scales
 
+        self._expl_behavior = {
+            "random": expl.Random,
+            "greedy": expl.Greedy,
+        }[config.exploration.expl_behavior](
+            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="expl"
+        )
+        self._eval_behavior = expl.Greedy(
+            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="eval"
+        )
+
     @property
     def policy_keys(self):
         return "^(enc|dyn|dec|pol)/"
@@ -137,33 +132,7 @@ class Agent(embodied.jax.Agent):
         return self.init_policy(batch_size)
 
     def policy(self, carry, obs, mode="train"):
-        (enc_carry, dyn_carry, dec_carry, prevact) = carry
-        kw = dict(training=False, single=True)
-        reset = obs["is_first"]
-        enc_carry, enc_entry, tokens = self.enc(enc_carry, obs, reset, **kw)
-        dyn_carry, dyn_entry, feat = self.dyn.observe(
-            dyn_carry, tokens, prevact, reset, **kw
-        )
-        dec_entry = {}
-        if dec_carry:
-            dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
-        policy = self.pol(self.feat2tensor(feat), bdims=1)
-        act = sample(policy)
-        out = {}
-        out["finite"] = elements.tree.flatdict(
-            jax.tree.map(
-                lambda x: jnp.isfinite(x).all(range(1, x.ndim)),
-                dict(obs=obs, carry=carry, tokens=tokens, feat=feat, act=act),
-            )
-        )
-        carry = (enc_carry, dyn_carry, dec_carry, act)
-        if self.config.replay_context:
-            out.update(
-                elements.tree.flatdict(
-                    dict(enc=enc_entry, dyn=dyn_entry, dec=dec_entry)
-                )
-            )
-        return carry, act, out
+        return self._expl_behavior.act(carry, obs)
 
     def train(self, carry, data):
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
