@@ -67,6 +67,17 @@ class Agent(embodied.jax.Agent):
         self.valnorm = embodied.jax.Normalize(**config.valnorm, name="valnorm")
         self.advnorm = embodied.jax.Normalize(**config.advnorm, name="advnorm")
 
+        self._expl_behavior = {
+            "random": expl.Random,
+            "greedy": expl.Greedy,
+            "plan2explore": expl.Plan2Explore,
+        }[config.exploration.expl_behavior](
+            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="expl"
+        )
+        self._eval_behavior = expl.Greedy(
+            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="eval"
+        )
+
         self.modules = [
             self.dyn,
             self.enc,
@@ -75,7 +86,7 @@ class Agent(embodied.jax.Agent):
             self.con,
             self.pol,
             self.val,
-        ]
+        ] + self._expl_behavior.modules
         self.opt = embodied.jax.Optimizer(
             self.modules, self._make_opt(**config.opt), summary_depth=1, name="opt"
         )
@@ -84,16 +95,6 @@ class Agent(embodied.jax.Agent):
         rec = scales.pop("rec")
         scales.update({k: rec for k in dec_space})
         self.scales = scales
-
-        self._expl_behavior = {
-            "random": expl.Random,
-            "greedy": expl.Greedy,
-        }[config.exploration.expl_behavior](
-            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="expl"
-        )
-        self._eval_behavior = expl.Greedy(
-            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="eval"
-        )
 
     @property
     def policy_keys(self):
@@ -246,13 +247,16 @@ class Agent(embodied.jax.Agent):
             losses.update(los)
             metrics.update(prefix(mets, "reploss"))
 
+        expl_losses, expl_mets = self._expl_behavior.loss(carry, obs)
+        losses.update(expl_losses)
+        metrics.update(expl_mets)
+
         assert set(losses.keys()) == set(self.scales.keys()), (
             sorted(losses.keys()),
             sorted(self.scales.keys()),
         )
         metrics.update({f"loss/{k}": v.mean() for k, v in losses.items()})
         loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
-
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
         outs = {"tokens": tokens, "repfeat": repfeat, "losses": losses}

@@ -120,6 +120,7 @@ defaults:
         policy: 1.0,
         value: 1.0,
         repval: 0.3,
+        expl: 1.0,
       }
     opt:
       {
@@ -261,7 +262,9 @@ defaults:
       expl_behavior: "greedy"
 
       plan2explore:
-        dummy: 1
+        disag_target: "stoch"
+        model: { layers: 4, units: 400, act: silu }
+        num_models: 10
 
 size1m: &size1m
   .*\.rssm: { deter: 512, hidden: 64, classes: 4 }

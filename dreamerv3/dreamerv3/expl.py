@@ -4,6 +4,7 @@ import embodied.jax.nets as nn
 import jax
 import jax.numpy as jnp
 import ninjax as nj
+import numpy as np
 
 from . import rssm
 from .utils import mean, sample
@@ -33,6 +34,7 @@ class Exploration(nj.Module):
             ],
             -1,
         )
+        self.modules = []
 
     def select_action(self, feat):
         raise NotImplementedError
@@ -65,6 +67,9 @@ class Exploration(nj.Module):
             )
         return carry, act, out
 
+    def loss(self, carry, data):
+        return {}, {}
+
 
 class Random(Exploration):
     def select_action(self, feat):
@@ -74,6 +79,79 @@ class Random(Exploration):
 
 
 class Greedy(Exploration):
+    def select_action(self, feat):
+        policy = self.policy(self.feat2tensor(feat), bdims=1)
+        action = mean(policy)
+        return action
+
+
+class Plan2Explore(Exploration):
+    def __init__(
+        self,
+        config,
+        policy: embodied.jax.MLPHead,
+        val: embodied.jax.MLPHead,
+        encoder: rssm.Encoder,
+        dynamics: rssm.RSSM,
+        decoder: rssm.Decoder,
+    ):
+        super().__init__(config, policy, val, encoder, dynamics, decoder)
+
+        space = {
+            "embed": {"output": elements.Space(np.float32, (encoder.out_dim,))},
+            "stoch": {
+                "output": elements.Space(
+                    np.float32,
+                    (
+                        config.dyn[config.dyn.typ].stoch
+                        * config.dyn[config.dyn.typ].classes,
+                    ),
+                )
+            },
+            "deter": {
+                "output": elements.Space(
+                    np.float32, (config.dyn[config.dyn.typ].deter,)
+                )
+            },
+            "feat": {
+                "output": elements.Space(
+                    np.float32,
+                    (
+                        config.dyn[config.dyn.typ].deter
+                        + config.dyn[config.dyn.typ].stoch
+                        * config.dyn[config.dyn.typ].classes,
+                    ),
+                )
+            },
+        }[config.exploration.plan2explore.disag_target]
+        print(space)
+
+        scalar = elements.Space(
+            np.float32,
+        )
+        self.modules = [
+            embodied.jax.MLPHead(
+                space,
+                "mse",
+                **config.exploration.plan2explore.model,
+                name=f"plan2explore_{i}",
+            )
+            for i in range(config.exploration.plan2explore.num_models)
+        ]
+
+    def loss(self, carry, data):
+        preds = []
+        for net in self.modules:
+            # Dummy input — same shape as expected space
+            dummy_inp = jnp.zeros((1, 5))
+            pred = net(dummy_inp, bdims=1)  # forward pass
+            preds.append(pred)
+
+        # Combine predictions into a single scalar
+        dummy_loss = sum([jnp.mean(mean(p["output"]) ** 2) for p in preds]) * 0.0 + 0.0
+
+        return {"expl": dummy_loss}, {"expl": dummy_loss}
+
     def select_action(self, feat):
         policy = self.policy(self.feat2tensor(feat), bdims=1)
         action = mean(policy)
