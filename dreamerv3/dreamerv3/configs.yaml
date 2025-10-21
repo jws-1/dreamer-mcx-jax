@@ -265,6 +265,8 @@ defaults:
         disag_target: "stoch"
         model: { layers: 4, units: 400, act: silu }
         num_models: 10
+        extrinsic_scale: 0.0
+        intrinsic_scale: 1.0
 
 size1m: &size1m
   .*\.rssm: { deter: 512, hidden: 64, classes: 4 }
