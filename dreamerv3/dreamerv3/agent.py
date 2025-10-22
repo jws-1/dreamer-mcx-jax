@@ -9,7 +9,7 @@ import ninjax as nj
 import numpy as np
 import optax
 
-from . import expl, rssm
+from . import rssm
 from .utils import (
     concat,
     f32,
@@ -76,25 +76,6 @@ class Agent(embodied.jax.Agent):
         self.valnorm = embodied.jax.Normalize(**config.valnorm, name="valnorm")
         self.advnorm = embodied.jax.Normalize(**config.advnorm, name="advnorm")
 
-        self._expl_behavior = {
-            "random": expl.Random,
-            "greedy": expl.Greedy,
-            "plan2explore": expl.Plan2Explore,
-        }[config.exploration.expl_behavior](
-            obs_space,
-            act_space,
-            config,
-            self.pol,
-            self.val,
-            self.enc,
-            self.dyn,
-            self.dec,
-            name="expl",
-        )
-        self._eval_behavior = expl.Greedy(
-            config, self.pol, self.val, self.enc, self.dyn, self.dec, name="eval"
-        )
-
         self.modules = [
             self.dyn,
             self.enc,
@@ -103,7 +84,7 @@ class Agent(embodied.jax.Agent):
             self.con,
             self.pol,
             self.val,
-        ] + self._expl_behavior.modules
+        ]
         self.opt = embodied.jax.Optimizer(
             self.modules, self._make_opt(**config.opt), summary_depth=1, name="opt"
         )
@@ -111,7 +92,7 @@ class Agent(embodied.jax.Agent):
         scales = self.config.loss_scales.copy()
         rec = scales.pop("rec")
         scales.update({k: rec for k in dec_space})
-        self.scales = scales
+        self.scales = {k.replace("_", "/"): v for k, v in scales.items()}
 
     @property
     def policy_keys(self):
@@ -150,7 +131,33 @@ class Agent(embodied.jax.Agent):
         return self.init_policy(batch_size)
 
     def policy(self, carry, obs, mode="train"):
-        return self._expl_behavior.act(carry, obs)
+        (enc_carry, dyn_carry, dec_carry, prevact) = carry
+        kw = dict(training=False, single=True)
+        reset = obs["is_first"]
+        enc_carry, enc_entry, tokens = self.enc(enc_carry, obs, reset, **kw)
+        dyn_carry, dyn_entry, feat = self.dyn.observe(
+            dyn_carry, tokens, prevact, reset, **kw
+        )
+        dec_entry = {}
+        if dec_carry:
+            dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
+        policy = self.pol(self.feat2tensor(feat), bdims=1)
+        act = sample(policy)
+        out = {}
+        out["finite"] = elements.tree.flatdict(
+            jax.tree.map(
+                lambda x: jnp.isfinite(x).all(range(1, x.ndim)),
+                dict(obs=obs, carry=carry, tokens=tokens, feat=feat, act=act),
+            )
+        )
+        carry = (enc_carry, dyn_carry, dec_carry, act)
+        if self.config.replay_context:
+            out.update(
+                elements.tree.flatdict(
+                    dict(enc=enc_entry, dyn=dyn_entry, dec=dec_entry)
+                )
+            )
+        return carry, act, out
 
     def train(self, carry, data):
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
@@ -263,10 +270,6 @@ class Agent(embodied.jax.Agent):
             )
             losses.update(los)
             metrics.update(prefix(mets, "reploss"))
-
-        expl_losses, expl_mets = self._expl_behavior.loss(carry, obs)
-        losses.update(expl_losses)
-        metrics.update(expl_mets)
 
         assert set(losses.keys()) == set(self.scales.keys()), (
             sorted(losses.keys()),
