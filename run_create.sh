@@ -9,7 +9,4 @@
 #SBATCH --nodes=1
 #SBATCH --mem=64000
 module load cuda
-cd /users/$USER/dreamer-mcx-jax
-source venv/bin/activate
-cd dreamerv3
-bash entrypoint.sh python dreamerv3/main.py --configs dmc_vision debug --method test --logdir logdir
+source venv/bin/activate && cd dreamerv3 && bash entrypoint.sh python dreamerv3/main.py --configs dmc_vision debug --method test --logdir logdir
